@@ -1,0 +1,5 @@
+/referencia-lovable/
+/docs/*
+!/docs/atlas.md
+!/docs/despliegue.md
+!/docs/entrega-sprint4.md

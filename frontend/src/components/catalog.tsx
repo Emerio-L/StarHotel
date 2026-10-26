@@ -1,47 +1,205 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { api } from "@/lib/client-api";
+import type { Amenity } from "@/lib/amenities";
 import { SlidersIcon } from "@/components/icons";
 import { RoomCard } from "@/components/room-card";
 import { RoomFiltersForm } from "@/components/room-filters";
-import { emptyFilters, filterRooms, type Room, type RoomFilters } from "@/lib/rooms";
+import {
+  emptyFilters,
+  filterRooms,
+  type Room,
+  type RoomFilters,
+} from "@/lib/rooms";
 
-export function Catalog({ rooms }: { rooms: Room[] }) {
+export function Catalog({
+  rooms,
+  initialFilters = emptyFilters,
+  initialAvailableCatalogs = null,
+  initialError = "",
+}: {
+  rooms: Room[];
+  initialFilters?: RoomFilters;
+  initialAvailableCatalogs?: string[] | null;
+  initialError?: string;
+}) {
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [draft, setDraft] = useState<RoomFilters>(emptyFilters);
-  const [applied, setApplied] = useState<RoomFilters>(emptyFilters);
-  const visibleRooms = filterRooms(rooms, applied);
+  const [draft, setDraft] = useState<RoomFilters>(initialFilters);
+  const [applied, setApplied] = useState<RoomFilters>(
+    initialError
+      ? { ...initialFilters, checkIn: "", checkOut: "" }
+      : initialFilters,
+  );
+  const [amenities, setAmenities] = useState<Amenity[]>([]);
+  const [availableCatalogs, setAvailableCatalogs] = useState<string[] | null>(
+    initialAvailableCatalogs,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(initialError);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const requestVersion = useRef(0);
+  const visibleRooms = filterRooms(rooms, applied).filter(
+    (room) => !availableCatalogs || availableCatalogs.includes(room.id),
+  );
+  useEffect(() => {
+    let active = true;
+    api<Amenity[]>("/amenidades")
+      .then((result) => {
+        if (active) setAmenities(result);
+      })
+      .catch(() => {
+        if (active)
+          setError(
+            "No se pudieron cargar las amenidades. Vuelve a cargar la página.",
+          );
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  function changeDraft(filters: RoomFilters) {
+    requestVersion.current += 1;
+    setBusy(false);
+    setError("");
+    setDraft(filters);
+  }
+
+  async function applyFilters() {
+    const version = ++requestVersion.current;
+    setError("");
+    if (Boolean(draft.checkIn) !== Boolean(draft.checkOut)) {
+      setError(
+        "Selecciona la fecha de ingreso y la de salida para consultar disponibilidad.",
+      );
+      return;
+    }
+    if (
+      draft.minPrice !== "" &&
+      draft.maxPrice !== "" &&
+      Number(draft.minPrice) > Number(draft.maxPrice)
+    ) {
+      setError("El precio máximo debe ser igual o mayor que el mínimo.");
+      return;
+    }
+    setBusy(true);
+    try {
+      let catalogos: string[] | null = null;
+      if (draft.checkIn && draft.checkOut) {
+        const query = new URLSearchParams({
+          ingreso: draft.checkIn,
+          salida: draft.checkOut,
+        });
+        const result = await api<{ habitaciones: { catalogo: string }[] }>(
+          `/disponibilidad?${query}`,
+        );
+        catalogos = [
+          ...new Set(result.habitaciones.map((room) => room.catalogo)),
+        ];
+      }
+      if (version !== requestVersion.current) return;
+      setAvailableCatalogs(catalogos);
+      setApplied({
+        ...draft,
+        amenities: draft.amenities.filter((codigo) =>
+          amenities.some((a) => a.codigo === codigo),
+        ),
+      });
+      dialog.current?.close();
+    } catch (err) {
+      if (version === requestVersion.current) setError((err as Error).message);
+    } finally {
+      if (version === requestVersion.current) setBusy(false);
+    }
+  }
 
   return (
-    <section id="habitaciones" className="mx-auto w-full max-w-3xl px-4 py-8">
-      <h1 className="text-3xl font-semibold tracking-tight">Habitaciones disponibles</h1>
-      <button
-        type="button"
-        aria-expanded={filtersOpen}
-        onClick={() => setFiltersOpen((open) => !open)}
-        className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-brand px-4 py-3 text-sm font-semibold text-white"
+    <div className="mx-auto flex w-full max-w-[1600px]">
+      <aside
+        aria-label="Filtros de habitaciones"
+        className="sticky top-16 hidden h-[calc(100vh-4rem)] w-[300px] shrink-0 overflow-y-auto border-r border-zinc-200 bg-white px-6 py-8 md:block lg:w-[320px]"
       >
-        <SlidersIcon />
-        {filtersOpen ? "Ocultar filtros" : "Mostrar Filtros"}
-      </button>
-      {filtersOpen ? (
         <RoomFiltersForm
           value={draft}
-          onChange={setDraft}
-          onApply={() => setApplied(draft)}
+          onChange={changeDraft}
+          onApply={applyFilters}
+          amenities={amenities}
+          busy={busy}
         />
-      ) : null}
-      {visibleRooms.length === 0 ? (
-        <p className="mt-8 text-center text-zinc-500">
-          No hay habitaciones que coincidan con los filtros.
-        </p>
-      ) : (
-        <div className="mt-6 space-y-6">
-          {visibleRooms.map((room) => (
-            <RoomCard key={room.id} room={room} />
-          ))}
-        </div>
-      )}
-    </section>
+      </aside>
+      <section id="habitaciones" className="min-w-0 flex-1 px-4 py-8 sm:px-6">
+        <h1 className="text-[22px] font-bold sm:text-2xl">
+          Habitaciones disponibles
+        </h1>
+        <button
+          type="button"
+          aria-expanded={filtersOpen}
+          onClick={() => {
+            setFiltersOpen(true);
+            dialog.current?.showModal();
+          }}
+          className="mt-5 flex w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-3 text-sm font-semibold text-white md:hidden"
+        >
+          <SlidersIcon />
+          {filtersOpen ? "Ocultar filtros" : "Mostrar Filtros"}
+        </button>
+        <dialog
+          ref={dialog}
+          onClose={() => setFiltersOpen(false)}
+          className="fixed inset-y-0 left-0 m-0 h-dvh max-h-dvh w-[88vw] max-w-sm overflow-y-auto border-0 bg-white p-6 text-foreground backdrop:bg-black/40"
+        >
+          <button
+            type="button"
+            className="mb-6 block ml-auto text-sm font-semibold text-brand"
+            onClick={() => dialog.current?.close()}
+          >
+            Cerrar filtros ×
+          </button>
+          <RoomFiltersForm
+            value={draft}
+            onChange={changeDraft}
+            onApply={applyFilters}
+            amenities={amenities}
+            busy={busy}
+          />
+          {error && (
+            <p role="alert" className="mt-4 text-sm text-red-700">
+              {error}
+            </p>
+          )}
+        </dialog>
+        {error && (
+          <p
+            role="alert"
+            className="mt-5 rounded-md bg-red-50 p-3 text-sm text-red-800"
+          >
+            {error}
+          </p>
+        )}
+        {applied.checkIn && applied.checkOut && (
+          <p className="mt-4 text-sm text-zinc-500">
+            Disponibilidad del {applied.checkIn} al {applied.checkOut}. Se
+            confirma nuevamente al reservar.
+          </p>
+        )}
+        {visibleRooms.length === 0 ? (
+          <p className="mt-8 text-center text-zinc-500">
+            No hay habitaciones que coincidan con los filtros.
+          </p>
+        ) : (
+          <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
+            {visibleRooms.map((room) => (
+              <RoomCard
+                key={room.id}
+                room={room}
+                ingreso={applied.checkIn}
+                salida={applied.checkOut}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
   );
 }

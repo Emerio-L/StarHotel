@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { amenidadesSemilla } from "../data/catalogo";
+import { Unidad } from "../models/unidad";
+import { Amenidad, type AmenidadDocumento } from "../models/amenidad";
 import {
   Habitacion,
   TIPOS_HABITACION,
@@ -10,7 +11,25 @@ import {
 
 export const habitacionesRouter = Router();
 
-const codigosAmenidad = new Set(amenidadesSemilla.map((amenidad) => amenidad.codigo));
+function respuesta(doc: HabitacionDocumento, amenidades: AmenidadDocumento[]) {
+  const activas = doc.amenidades.flatMap((codigo) => {
+    const amenidad = amenidades.find((a) => a.codigo === codigo);
+    return amenidad
+      ? [
+          {
+            codigo,
+            nombre: amenidad.nombre,
+            descripcion: amenidad.descripcion ?? "",
+          },
+        ]
+      : [];
+  });
+  return {
+    ...toHabitacionRespuesta(doc),
+    amenidades: activas.map((a) => a.codigo),
+    amenidadesDetalle: activas,
+  };
+}
 
 function lista(valor: unknown): string[] {
   if (typeof valor !== "string" || valor.trim() === "") {
@@ -42,7 +61,13 @@ habitacionesRouter.get("/", async (req, res, next) => {
     }
 
     const amenidades = lista(req.query.amenidades);
-    const amenidadesInvalidas = amenidades.filter((codigo) => !codigosAmenidad.has(codigo));
+    const catalogoAmenidades = await Amenidad.find({
+      activa: { $ne: false },
+    }).lean();
+    const codigosAmenidad = new Set(catalogoAmenidades.map((a) => a.codigo));
+    const amenidadesInvalidas = amenidades.filter(
+      (codigo) => !codigosAmenidad.has(codigo),
+    );
     if (amenidadesInvalidas.length > 0) {
       res.status(400).json({ error: "Amenidad no válida." });
       return;
@@ -56,11 +81,13 @@ habitacionesRouter.get("/", async (req, res, next) => {
       Number.isNaN(precioMin) ||
       Number.isNaN(precioMax)
     ) {
-      res.status(400).json({ error: "Los filtros numéricos deben ser números." });
+      res
+        .status(400)
+        .json({ error: "Los filtros numéricos deben ser números." });
       return;
     }
 
-    const filtro: Record<string, unknown> = {};
+    const filtro: Record<string, unknown> = { activa: { $ne: false } };
     if (tipos.length > 0) {
       filtro.tipo = { $in: tipos };
     }
@@ -78,15 +105,25 @@ habitacionesRouter.get("/", async (req, res, next) => {
       filtro.precioPorNoche = precio;
     }
 
-    const documentos = await Habitacion.find(filtro).sort({ orden: 1 }).lean<HabitacionDocumento[]>();
+    const documentos = await Habitacion.find(filtro)
+      .sort({ orden: 1 })
+      .lean<HabitacionDocumento[]>();
+    const inventoryExists = await Unidad.exists({});
+    const availableCodes = inventoryExists
+      ? await Unidad.distinct("catalogo", {
+          activa: true,
+          estado: "disponible",
+        })
+      : null;
     const habitaciones = documentos
+      .filter((doc) => !availableCodes || availableCodes.includes(doc.codigo))
       .filter((doc) => {
         if (huespedes === undefined) {
           return true;
         }
         return doc.capacidad.adultos + doc.capacidad.ninos >= huespedes;
       })
-      .map(toHabitacionRespuesta);
+      .map((doc) => respuesta(doc, catalogoAmenidades));
 
     res.json(habitaciones);
   } catch (error) {
@@ -96,12 +133,16 @@ habitacionesRouter.get("/", async (req, res, next) => {
 
 habitacionesRouter.get("/:codigo", async (req, res, next) => {
   try {
-    const documento = await Habitacion.findOne({ codigo: req.params.codigo }).lean<HabitacionDocumento | null>();
+    const documento = await Habitacion.findOne({
+      codigo: req.params.codigo,
+      activa: { $ne: false },
+    }).lean<HabitacionDocumento | null>();
     if (!documento) {
       res.status(404).json({ error: "Habitación no encontrada." });
       return;
     }
-    res.json(toHabitacionRespuesta(documento));
+    const amenidades = await Amenidad.find({ activa: { $ne: false } }).lean();
+    res.json(respuesta(documento, amenidades));
   } catch (error) {
     next(error);
   }
