@@ -26,8 +26,8 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 async function main(): Promise<void> {
   await connectDb();
   await seedIfEmpty();
-  app.listen(port, () => {
-    console.log(`API en http://localhost:${port}`);
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`API en 0.0.0.0:${port}`);
   });
 }
 
