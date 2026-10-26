@@ -8,7 +8,8 @@ async function main() {
   await connectDb();
   await seedIfEmpty();
   await ensureReservaIndexes();
-  const port = Number(process.env.PORT ?? 4000);
+  // Railway's public target port is configured as 4000 for this service.
+  const port = 4000;
   const server = app.listen(port, "0.0.0.0", () =>
     console.log(
       `API en http://localhost:${port} (${process.env.REQUIRE_LOCAL_DB === "true" ? "MongoDB local" : "base configurada"})`,
